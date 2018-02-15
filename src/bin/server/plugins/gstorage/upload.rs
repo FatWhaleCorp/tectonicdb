@@ -138,7 +138,6 @@ mod tests {
 
     #[test]
     fn should_upload_file_to_gcloud() {
-
         let conf = GStorageConfig::new().unwrap();
         let fname = "test/test-data/pl_btc_nav.dtf";
         let mut f = GStorageFile::new(&conf, fname).unwrap();
@@ -150,10 +149,11 @@ mod tests {
         let json = serde_json::to_string(&metadata).unwrap();
 
         println!("{}", json);
-        let res = post_to_dcb(&json).unwrap();
-        println!("{}", res);
+        if let Some(ref dcb_url) = conf.dcb_url {
+            let res = post_to_dcb(&json, dcb_url).unwrap();
+            println!("{}", res);
+        }
 
         println!("DONE");
-
     }
 }
