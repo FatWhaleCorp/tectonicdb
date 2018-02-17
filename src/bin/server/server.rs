@@ -53,7 +53,6 @@ pub fn run_server(host: &str, port: &str, settings: &Settings) {
 
     let global = Arc::new(RwLock::new(SharedState::new(settings.clone())));
 
-
     run_plugins(global.clone());
 
     use std::rc::Rc;

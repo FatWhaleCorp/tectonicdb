@@ -1,21 +1,14 @@
 [package]
-name = "tectonicdb"
-version = "0.2.0"
 authors = ["Ricky Han <tectonic@rickyhan.com>"]
-description = "fast datastore server for contiguous order book ticks"
-repository = "https://github.com/rickyhan/tectonicdb"
-keywords = ["finance", "datastore", "database", "financial"]
 category = "Database"
+description = "fast datastore server for contiguous order book ticks"
+exclude = ["db/*", "test/test-data/*"]
+keywords = ["finance", "datastore", "database", "financial"]
 license = "MIT"
+name = "tectonicdb"
 readme = "README.md"
-exclude = [
-    "db/*",
-    "test/test-data/*",
-]
-
-[lib]
-name = "libtectonic"
-path = "src/lib/lib.rs"
+repository = "https://github.com/rickyhan/tectonicdb"
+version = "0.2.0"
 
 [[bin]]
 name = "tectonic-server"
@@ -25,47 +18,42 @@ path = "src/bin/server/main.rs"
 name = "tectonic-cli"
 path = "src/bin/cli/main.rs"
 
-# [[bin]]
-# name = "gen_dtfs"
-# publish = false
-# path = "src/bin/gen_dtfs/main.rs"
-
 [[bin]]
 name = "gen_train_data"
-publish = false
 path = "src/bin/gen_train_data/main.rs"
+publish = false
 
 [[bin]]
 name = "dtfcat"
-publish = true
 path = "src/bin/dtfcat/main.rs"
+publish = true
+
+[dependencies]
+bitflags = "1.0.0"
+byteorder = "1.1.0"
+chrono = "0.4"
+clap = "~2.26"
+config = "0.6"
+fern = "0.4"
+futures = "0.1.14"
+log = "0.3"
+openssl-probe = "0.1.2"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+time = "0.1.38"
+tokio-core = "0.1"
+tokio-io = "0.1"
+uuid = { version = "0.5.1", features = ["serde"] }
+
+[dependencies.reqwest]
+optional = true
+version = "0.8.1"
 
 [features]
 default = ["gcs"]
+gcs = ["reqwest"]
 
-gcs = [ "reqwest" ]
-
-
-
-
-[dependencies]
-# These crates are mandatory:
-byteorder = "1.1.0"
-bitflags = "1.0.0"
-config = "0.6"
-clap = "~2.26"
-# Logging
-fern = "0.4"
-log = "0.3"
-chrono = "0.4"
-time = "0.1.38"
-serde = "1.0"
-serde_json = "1.0"
-serde_derive = "1.0"
-uuid = "0.5.1"
-tokio-core = "0.1"
-tokio-io = "0.1"
-futures = "0.1.14"
-
-# google storage
-reqwest = { version = "0.8.1", optional = true }
+[lib]
+name = "libtectonic"
+path = "src/lib/lib.rs"
