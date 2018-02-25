@@ -31,6 +31,7 @@ use std::fmt;
 use std::cmp;
 use byteorder::{BigEndian, WriteBytesExt, ReadBytesExt};
 use std::io::{self, Write, Read, Seek, BufWriter, BufReader, SeekFrom};
+use utils::epoch_to_human;
 
 static MAGIC_VALUE: &[u8] = &[0x44, 0x54, 0x46, 0x90, 0x01]; // DTF9001
 const SYMBOL_LEN: usize = 20;
@@ -70,12 +71,16 @@ impl fmt::Display for Metadata {
   "symbol": "{}",
   "nums": {},
   "max_ts": {},
-  "min_ts": {}
+  "max_ts_human": {},
+  "min_ts": {},
+  "min_ts_human": {}
 }}"#,
             self.symbol,
             self.nums,
             self.max_ts,
-            self.min_ts
+            epoch_to_human(self.max_ts),
+            self.min_ts,
+            epoch_to_human(self.min_ts)
         )
     }
 }
@@ -650,7 +655,9 @@ mod tests {
   "symbol": "TEST",
   "nums": 1,
   "max_ts": 1,
-  "min_ts": 1
+  "max_ts_human": 1970-01-01 00:00:01 UTC,
+  "min_ts": 1,
+  "min_ts_human": 1970-01-01 00:00:01 UTC
 }"#
         );
     }

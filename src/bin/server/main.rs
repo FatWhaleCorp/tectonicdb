@@ -15,6 +15,7 @@ extern crate log;
 extern crate fern;
 
 extern crate uuid;
+extern crate circular_queue;
 
 extern crate futures;
 extern crate tokio_io;
@@ -73,6 +74,10 @@ fn main() {
         .value_of("hist_granularity")
         .map(String::from)
         .unwrap_or(key_or_default("TECTONICDB_HIST_GRANULARITY", "30"));
+    let hist_q_capacity = matches
+        .value_of("hist_q_capacity")
+        .map(String::from)
+        .unwrap_or(key_or_default("TECTONICDB_HIST_QUEUE_CAPACITY", "300"));
 
     let log_file = matches
         .value_of("log_file")
@@ -82,8 +87,9 @@ fn main() {
     let settings = settings::Settings {
         autoflush: autoflush,
         dtf_folder: dtf_folder.to_owned(),
-        flush_interval: flush_interval.parse::<u32>().unwrap(),
-        hist_granularity: hist_granularity.parse::<u64>().unwrap(),
+        flush_interval: flush_interval.parse().unwrap(),
+        hist_granularity: hist_granularity.parse().unwrap(),
+        hist_q_capacity: hist_q_capacity.parse().unwrap(),
     };
 
     prepare_logger(verbosity, &log_file);
