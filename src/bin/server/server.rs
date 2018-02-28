@@ -9,8 +9,10 @@ use std::str;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::io::BufReader;
+use std::collections::HashMap;
 
-use state::*;
+use std::borrow::{Borrow, Cow};
+use state::{Global, SharedState, ThreadState};
 use handler::ReturnType;
 use utils;
 use handler;
@@ -52,6 +54,7 @@ pub fn run_server(host: &str, port: &str, settings: &Settings) {
     info!("----------------- initialized -----------------");
 
     let global = Arc::new(RwLock::new(SharedState::new(settings.clone())));
+    let store = Arc::new(RwLock::new(HashMap::new()));
 
     run_plugins(global.clone());
 
@@ -60,7 +63,7 @@ pub fn run_server(host: &str, port: &str, settings: &Settings) {
     // main loop
     let done = listener.incoming().for_each(move |(socket, _addr)| {
         let global_copy = global.clone();
-        let state = Rc::new(RefCell::new(State::new(&global)));
+        let state = Rc::new(RefCell::new(ThreadState::new(global.clone(), store.clone())));
         let state_clone = state.clone();
 
         match utils::init_dbs(&mut state.borrow_mut()) {
@@ -72,7 +75,12 @@ pub fn run_server(host: &str, port: &str, settings: &Settings) {
         let (rdr, wtr) = socket.split();
         let lines = lines(BufReader::new(rdr));
         let responses = lines.map(move |line| {
-            let resp = handler::gen_response(line.clone(), &mut state.borrow_mut());
+            #[cfg(feature="debug")]
+            {
+                debug!("{}", line);
+            }
+            let line: Cow<str> = line.into();
+            let resp = handler::gen_response(line.borrow(), &mut state.borrow_mut());
             (line, resp)
         });
         let writes = responses.fold(wtr, |wtr, (line, resp)| {
@@ -114,9 +122,7 @@ pub fn run_server(host: &str, port: &str, settings: &Settings) {
     core.run(done).unwrap();
 }
 
-type LockedGlobal = Arc<RwLock<SharedState>>;
-
-fn on_connect(global: &LockedGlobal) {
+fn on_connect(global: &Global) {
     {
         let mut glb_wtr = global.write().unwrap();
         glb_wtr.n_cxns += 1;
@@ -128,7 +134,7 @@ fn on_connect(global: &LockedGlobal) {
     );
 }
 
-fn on_disconnect(global: &LockedGlobal) {
+fn on_disconnect(global: &Global) {
     {
         let mut glb_wtr = global.write().unwrap();
         glb_wtr.n_cxns -= 1;

@@ -11,7 +11,7 @@ use libtectonic::dtf::update::Update;
 use libtectonic::storage::utils::scan_files_for_range;
 use libtectonic::utils::within_range;
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use utils;
 use std::path::Path;
@@ -22,6 +22,10 @@ use uuid::Uuid;
 use handler::{GetFormat, ReturnType, ReqCount, Loc, Range};
 use subscription::Subscriptions;
 
+/// An atomic reference counter for accessing shared data.
+pub type Global = Arc<RwLock<SharedState>>;
+pub type HashMapStore<'a> = Arc<RwLock<HashMap<String, Store<'a>>>>;
+
 /// name: *should* be the filename
 /// in_memory: are the updates read into memory?
 /// size: true number of items
@@ -30,7 +34,7 @@ use subscription::Subscriptions;
 ///
 /// When client connects, the following happens:
 ///
-/// 1. server creates a State
+/// 1. server creates a ThreadState
 /// 2. initialize 'default' data store
 /// 3. reads filenames under dtf_folder
 /// 4. loads metadata but not updates
@@ -42,17 +46,14 @@ use subscription::Subscriptions;
 /// the client can free the updates from memory using CLEAR or CLEARALL
 ///
 #[derive(Debug)]
-pub struct Store {
-    pub name: String,
-    pub fname: String,
+pub struct Store<'a> {
+    pub name: Cow<'a, str>,
+    pub fname: Cow<'a, str>,
     pub in_memory: bool,
     pub global: Global,
 }
 
-/// An atomic reference counter for accessing shared data.
-pub type Global = Arc<RwLock<SharedState>>;
-
-impl Store {
+impl<'a> Store<'a> {
     /// push a new `update` into the vec
     pub fn add(&mut self, new_vec: Update) {
         let is_autoflush = {
@@ -61,13 +62,14 @@ impl Store {
             // send to insertion firehose
             {
                 let tx = wtr.subs.lock().unwrap();
-                let _ = tx.msg(Arc::new(Mutex::new((self.name.clone(), new_vec))));
+                let _ = tx.msg(Arc::new(Mutex::new((self.name.to_string(), new_vec))));
             }
 
             let is_autoflush = wtr.settings.autoflush;
             let flush_interval = wtr.settings.flush_interval;
             let _folder = wtr.settings.dtf_folder.to_owned();
-            let vecs = wtr.vec_store.get_mut(&self.name).expect(
+            let name: &str = self.name.borrow();
+            let vecs = wtr.vec_store.get_mut(name).expect(
                 "KEY IS NOT IN HASHMAP",
             );
 
@@ -97,7 +99,8 @@ impl Store {
 
     pub fn count(&self) -> u64 {
         let rdr = self.global.read().unwrap();
-        let vecs = rdr.vec_store.get(&self.name).expect(
+        let name: &str = self.name.borrow();
+        let vecs = rdr.vec_store.get(name).expect(
             "KEY IS NOT IN HASHMAP",
         );
         vecs.1
@@ -111,7 +114,8 @@ impl Store {
         {
             let mut rdr = self.global.write().unwrap(); // use a write lock to block write in client processes
             let folder = rdr.settings.dtf_folder.to_owned();
-            let vecs = rdr.vec_store.get_mut(&self.name).expect(
+            let name: &str = self.name.borrow();
+            let vecs = rdr.vec_store.get_mut(name).expect(
                 "KEY IS NOT IN HASHMAP",
             );
             let fullfname = format!("{}/{}.dtf", &folder, self.fname);
@@ -155,7 +159,8 @@ impl Store {
                 let mut ups = ups.unwrap();
                 let mut wtr = self.global.write().unwrap();
                 // let size = ups.len() as u64;
-                let vecs = wtr.vec_store.get_mut(&self.name).unwrap();
+                let name: &str = self.name.borrow();
+                let vecs = wtr.vec_store.get_mut(name).unwrap();
                 vecs.0.append(&mut ups);
                 // wtr.vec_store.insert(self.name.to_owned(), (ups, size));
                 self.in_memory = true;
@@ -174,8 +179,9 @@ impl Store {
         match header_size {
             Ok(header_size) => {
                 let mut wtr = self.global.write().unwrap();
+                let name: &str = &self.name.borrow();
                 wtr.vec_store
-                    .get_mut(&self.name)
+                    .get_mut(name)
                     .expect("Key is not in vec_store")
                     .1 = header_size;
             }
@@ -189,7 +195,8 @@ impl Store {
     pub fn clear(&mut self) {
         {
             let mut rdr = self.global.write().unwrap();
-            let vecs = (*rdr).vec_store.get_mut(&self.name).expect(
+            let name: &str = self.name.borrow();
+            let vecs = (*rdr).vec_store.get_mut(name).expect(
                 "KEY IS NOT IN HASHMAP",
             );
             vecs.0.clear();
@@ -200,8 +207,8 @@ impl Store {
     }
 }
 
-/// Each client gets its own State
-pub struct State {
+/// Each client gets its own ThreadState
+pub struct ThreadState<'thr, 'store> {
     /// Is inside a BULKADD operation?
     pub is_adding: bool,
     /// Current selected db using `BULKADD INTO [db]`
@@ -217,16 +224,47 @@ pub struct State {
     pub rx: Option<Arc<Mutex<mpsc::Receiver<Update>>>>,
 
     /// mapping store_name -> Store
-    pub store: HashMap<String, Store>,
+    pub store: Arc<RwLock<HashMap<String, Store<'store>>>>,
 
     /// the current STORE client is using
-    pub current_store_name: String,
+    pub current_store_name: Cow<'thr, str>,
 
     /// shared data
     pub global: Global,
 }
 
-impl State {
+macro_rules! current_store {
+    ($sel:ident, $fun:ident) => {
+        {
+            let name: &str = $sel.current_store_name.borrow();
+            let mut store = $sel.store.write().unwrap();
+            store.get_mut(name).expect(
+                "KEY IS NOT IN HASHMAP",
+            ).$fun()
+        }
+    };
+
+    ($sel:ident, $fun:ident, $param:ident) => {
+        {
+            let name: &str = $sel.current_store_name.borrow();
+            let mut store = $sel.store.write().unwrap();
+            store.get_mut(name).expect(
+                "KEY IS NOT IN HASHMAP",
+            ).$fun($param)
+        }
+    };
+}
+
+macro_rules! store {
+    ($sel:ident, $fun:ident) => {
+        $sel.store.write().unwrap().$fun()
+    };
+    ($sel:ident, $fun:ident, $param:ident) => {
+        $sel.store.write().unwrap().$fun($param)
+    };
+}
+
+impl<'thr, 'store> ThreadState<'thr, 'store> {
     /// Get information about the server
     ///
     /// Returns a JSON string.
@@ -321,7 +359,7 @@ impl State {
 
     /// Insert a row into store
     pub fn insert(&mut self, up: Update, store_name: &str) -> Option<()> {
-        match self.store.get_mut(store_name) {
+        match store!(self, get_mut, store_name) {
             Some(store) => {
                 store.add(up);
                 Some(())
@@ -332,13 +370,12 @@ impl State {
 
     /// Check if a table exists
     pub fn exists(&mut self, store_name: &str) -> bool {
-        self.store.contains_key(store_name)
+        store!(self, contains_key, store_name)
     }
 
     /// Insert a row into current store.
     pub fn add(&mut self, up: Update) {
-        let current_store = self.get_current_store();
-        current_store.add(up);
+        current_store!(self, add, up);
     }
 
 
@@ -353,11 +390,11 @@ impl State {
             );
         }
         // insert a store into client state hashmap
-        self.store.insert(
+        self.store.write().unwrap().insert(
             store_name.to_owned(),
             Store {
-                name: store_name.to_owned(),
-                fname: format!("{}--{}", Uuid::new_v4(), store_name),
+                name: store_name.to_owned().into(),
+                fname: format!("{}--{}", Uuid::new_v4(), store_name).into(),
                 in_memory: false,
                 global: self.global.clone(),
             },
@@ -366,10 +403,9 @@ impl State {
 
     /// load a datastore file into memory
     pub fn use_db(&mut self, store_name: &str) -> Option<()> {
-        if self.store.contains_key(store_name) {
-            self.current_store_name = store_name.to_owned();
-            let current_store = self.get_current_store();
-            current_store.load();
+        if store!(self, contains_key, store_name) {
+            self.current_store_name = store_name.to_owned().into();
+            current_store!(self, load);
             Some(())
         } else {
             None
@@ -378,8 +414,7 @@ impl State {
 
     /// return the count of the current store
     pub fn count(&mut self) -> u64 {
-        let store = self.get_current_store();
-        store.count()
+        current_store!(self, count)
     }
 
     /// Returns the total count
@@ -436,33 +471,27 @@ impl State {
 
     /// remove everything in the current store
     pub fn clear(&mut self) {
-        self.get_current_store().clear();
+        current_store!(self, clear);
     }
 
     /// remove everything in every store
     pub fn clearall(&mut self) {
-        for store in self.store.values_mut() {
+        for store in store!(self, values_mut) {
             store.clear();
         }
     }
 
     /// save current store to file
     pub fn flush(&mut self) {
-        self.get_current_store().flush();
+        current_store!(self, flush);
+        // self.get_current_store().flush();
     }
 
     /// save all stores to corresponding files
     pub fn flushall(&mut self) {
-        for store in self.store.values_mut() {
+        for store in store!(self, values_mut) {
             store.flush();
         }
-    }
-
-    /// returns the current store as a mutable reference
-    fn get_current_store(&mut self) -> &mut Store {
-        self.store.get_mut(&self.current_store_name).expect(
-            "KEY IS NOT IN HASHMAP",
-        )
     }
 
     /// get `count` items from the current store
@@ -485,7 +514,8 @@ impl State {
 
         // check for items in memory
         let rdr = self.global.read().unwrap();
-        let &(ref vecs, _) = rdr.vec_store.get(&self.current_store_name)?;
+        let name: &str = self.current_store_name.borrow();
+        let &(ref vecs, _) = rdr.vec_store.get(name)?;
 
         // if range, filter mem
         let acc = catch! {
@@ -567,29 +597,29 @@ impl State {
         Some(ret)
     }
 
-    /// create a new store
-    pub fn new(global: &Global) -> State {
+    /// create a new threadstate
+    pub fn new<'a, 'b>(global: Global, store: HashMapStore<'b>) -> ThreadState<'a, 'b> {
         let dtf_folder: &str = &global.read().unwrap().settings.dtf_folder;
-        let mut state = State {
-            current_store_name: "default".to_owned(),
+        let state = ThreadState {
+            current_store_name: "default".into(),
             is_adding: false,
             bulkadd_db: None,
             is_subscribed: false,
             subscribed_db: None,
             sub_id: None,
             rx: None,
-            store: HashMap::new(),
+            store,
             global: global.clone(),
         };
 
         // insert default first, if there is a copy in memory this will be replaced
         let default_file = format!("{}/default.dtf", dtf_folder);
         let default_in_memory = !Path::new(&default_file).exists();
-        state.store.insert(
+        state.store.write().unwrap().insert(
             "default".to_owned(),
             Store {
-                name: "default".to_owned(),
-                fname: format!("{}--default", Uuid::new_v4()),
+                name: "default".into(),
+                fname: format!("{}--default", Uuid::new_v4()).into(),
                 in_memory: default_in_memory,
                 global: global.clone(),
             },
@@ -599,11 +629,11 @@ impl State {
         for (store_name, _vec) in &rdr.vec_store {
             let fname = format!("{}/{}.dtf", dtf_folder, store_name);
             let in_memory = !Path::new(&fname).exists();
-            state.store.insert(
+            state.store.write().unwrap().insert(
                 store_name.to_owned(),
                 Store {
-                    name: store_name.to_owned(),
-                    fname: format!("{}--{}", Uuid::new_v4(), store_name),
+                    name: store_name.to_owned().into(),
+                    fname: format!("{}--{}", Uuid::new_v4(), store_name).into(),
                     in_memory: in_memory,
                     global: global.clone(),
                 },
